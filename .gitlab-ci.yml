@@ -1,0 +1,165 @@
+stages:
+  - build
+  - test
+  - biometric_approval
+  - deploy
+
+variables:
+  BIOMETRIC_API_URL: "https://your-biometric-api.example.com"
+  # Set these as CI/CD variables in GitLab (masked)
+  # BIOMETRIC_TOKEN - JWT token for API authentication
+  # USER_ID - The user ID who will approve the deployment
+
+# Build stage
+build:
+  stage: build
+  script:
+    - echo "Building application..."
+    - npm install
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 hour
+
+# Test stage
+test:
+  stage: test
+  script:
+    - echo "Running tests..."
+    - npm test
+  dependencies:
+    - build
+
+# Biometric approval stage - This is the critical security step
+request_biometric_approval:
+  stage: biometric_approval
+  script:
+    - |
+      echo "Requesting biometric approval for deployment..."
+      
+      # Request CI/CD action
+      RESPONSE=$(curl -X POST "${BIOMETRIC_API_URL}/api/cicd/request-action" \
+        -H "Authorization: Bearer ${BIOMETRIC_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "action_type": "deploy",
+          "description": "Deploy to production environment",
+          "pipeline_id": "'${CI_PIPELINE_ID}'",
+          "environment": "production"
+        }')
+      
+      # Extract action_id
+      ACTION_ID=$(echo $RESPONSE | jq -r '.action_id')
+      echo "Action ID: ${ACTION_ID}"
+      
+      # Save action_id for next job
+      echo "ACTION_ID=${ACTION_ID}" > action_id.env
+      
+      echo "⚠️  BIOMETRIC APPROVAL REQUIRED ⚠️"
+      echo "Action ID: ${ACTION_ID}"
+      echo ""
+      echo "Please approve this deployment using biometric authentication:"
+      echo "1. Navigate to your biometric approval interface"
+      echo "2. Enter Action ID: ${ACTION_ID}"
+      echo "3. Provide biometric authentication (face or voice)"
+      echo ""
+      echo "This pipeline will wait for approval..."
+  artifacts:
+    reports:
+      dotenv: action_id.env
+  only:
+    - main
+    - production
+
+# Wait for biometric approval
+wait_for_approval:
+  stage: biometric_approval
+  script:
+    - |
+      echo "Waiting for biometric approval..."
+      echo "Action ID: ${ACTION_ID}"
+      
+      # Poll for approval status (max 15 minutes)
+      MAX_ATTEMPTS=90  # 90 * 10 seconds = 15 minutes
+      ATTEMPT=0
+      
+      while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+        ATTEMPT=$((ATTEMPT + 1))
+        
+        # Check action status
+        STATUS_RESPONSE=$(curl -X GET "${BIOMETRIC_API_URL}/api/cicd/action-status/${ACTION_ID}" \
+          -H "Authorization: Bearer ${BIOMETRIC_TOKEN}")
+        
+        STATUS=$(echo $STATUS_RESPONSE | jq -r '.status')
+        
+        if [ "$STATUS" = "approved" ]; then
+          echo "✅ Biometric approval received!"
+          echo "Deployment authorized to proceed."
+          exit 0
+        elif [ "$STATUS" = "denied" ]; then
+          echo "❌ Biometric approval denied!"
+          echo "Deployment blocked."
+          exit 1
+        fi
+        
+        echo "Status: ${STATUS} - Waiting... (${ATTEMPT}/${MAX_ATTEMPTS})"
+        sleep 10
+      done
+      
+      echo "❌ Approval timeout - No biometric approval received within 15 minutes"
+      exit 1
+  dependencies:
+    - request_biometric_approval
+  only:
+    - main
+    - production
+
+# Deploy stage - Only runs after biometric approval
+deploy_production:
+  stage: deploy
+  script:
+    - echo "Deploying to production..."
+    - echo "Biometric approval confirmed. Proceeding with deployment."
+    - |
+      # Your deployment commands here
+      # Example:
+      # - kubectl apply -f k8s/
+      # - helm upgrade myapp ./chart
+      # - rsync -avz dist/ user@server:/var/www/
+    - echo "Deployment completed successfully!"
+  environment:
+    name: production
+    url: https://your-app.example.com
+  dependencies:
+    - build
+    - wait_for_approval
+  only:
+    - main
+    - production
+  when: on_success
+
+# Example of a rollback that also requires biometric approval
+request_rollback_approval:
+  stage: biometric_approval
+  script:
+    - |
+      echo "Requesting biometric approval for rollback..."
+      
+      RESPONSE=$(curl -X POST "${BIOMETRIC_API_URL}/api/cicd/request-action" \
+        -H "Authorization: Bearer ${BIOMETRIC_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d '{
+          "action_type": "rollback",
+          "description": "Rollback production to previous version",
+          "pipeline_id": "'${CI_PIPELINE_ID}'",
+          "environment": "production"
+        }')
+      
+      ACTION_ID=$(echo $RESPONSE | jq -r '.action_id')
+      echo "Rollback Action ID: ${ACTION_ID}"
+      echo "Please approve rollback using biometric authentication"
+  when: manual
+  only:
+    - main
+    - production
