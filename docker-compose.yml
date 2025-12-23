@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  biometric-api:
+    build: .
+    container_name: biometric-cicd-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./biometric_cicd.db
+      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-change-this-encryption-key-in-production}
+      - DEBUG=False
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+      - biometric-data:/app/biometric_cicd.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: PostgreSQL for production
+  postgres:
+    image: postgres:15-alpine
+    container_name: biometric-postgres
+    environment:
+      - POSTGRES_USER=biometric
+      - POSTGRES_PASSWORD=biometric_password
+      - POSTGRES_DB=biometric_cicd
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    # Uncomment to use PostgreSQL instead of SQLite:
+    # Then update DATABASE_URL in biometric-api service to:
+    # DATABASE_URL=postgresql+asyncpg://biometric:biometric_password@postgres:5432/biometric_cicd
+
+volumes:
+  biometric-data:
+  postgres-data:
